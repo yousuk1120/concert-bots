@@ -1,0 +1,33 @@
+name: Daily Concert Scrape
+
+on:
+  schedule:
+    # 한국 시간 자정 (UTC 15:00)
+    - cron: '0 15 * * *'
+  workflow_dispatch: 
+    # 수동 실행 버튼 활성화
+
+jobs:
+  scrape-and-save:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v3
+
+      - name: 파이썬 3.10 설치
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 필요 도구 설치
+        run: |
+          pip install openai supabase apify-client python-dotenv requests
+
+      - name: 로봇 실행
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+        run: python main.py
