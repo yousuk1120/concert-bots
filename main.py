@@ -4,29 +4,31 @@ import requests
 import time
 from apify_client import ApifyClient
 from openai import OpenAI
-from supabase import create_client, Client
+from supabase import create_client, Client # Storage 접근용으로 필요
 
-# --- 환경 설정 (Github Actions Secrets에서 키를 읽도록 복구) ---
-# 🚨 주의: 이 키 값들을 코드에 직접 적으면 안 됩니다. Secrets에 맡깁니다.
+# [main.py, 환경 설정 섹션]
+
+# 🚨🚨🚨 이 4줄로 덮어써서 비밀번호를 숨깁니다 🚨🚨🚨
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN")
 
-# Supabase Rest API 주소
-SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1/concert_data"
+# ... (나머지 코드는 그대로 둡니다) ...
 
 
 # --- 로봇 초기화 및 주소 설정 ---
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 apify_client = ApifyClient(APIFY_API_TOKEN)
 
-# Storage 접근용 Client 초기화 (GitHub Actions에서 Secret을 읽어오도록 설정)
+# ★ 오류 해결 ★: Storage 접근용 Client 초기화 (최상단에서 정의)
 try:
     supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except:
-    # GitHub Actions 환경에서는 이 부분이 실행되지 않습니다.
     pass
+
+# Supabase Rest API 주소 (저장 시 캐시 우회를 위한 직접 요청 주소)
+SUPABASE_REST_URL = f"{SUPABASE_URL.strip()}/rest/v1/concert_data"
 
 
 # 수집할 인스타 계정들 (사용자님의 최종 리스트)
@@ -37,14 +39,13 @@ TARGET_ACCOUNTS = [
     "chippostgang", "idiots.band", "meaningful_stone", "bandbyebyebadman"
 ]
 
-
-# === 1. 수집 함수 (생략) ===
+# === 1. 수집 함수 ===
 def get_instagram_posts(username):
     print(f"🕵️  '{username}' 글 읽으러 가는 중...")
     
     run_input = {
         "directUrls": [f"https://www.instagram.com/{username}/"], 
-        "resultsLimit": 3, "resultsType": "posts", "searchType": "hashtag", "searchLimit": 1,
+        "resultsLimit": 3, "resultsType": "posts","searchType": "hashtag", "searchLimit": 1,
     }
     
     try:
@@ -60,15 +61,27 @@ def get_instagram_posts(username):
         print(f"⚠️ {username} 수집 중 에러: {e}")
         return []
 
-# === 2. 분석 함수 (생략) ===
+# === 2. 분석 함수 (텍스트 전용) ===
 def analyze_text_with_gpt(caption, venue_name):
-    # ... (분석 로직은 그대로)
-    if not caption or len(caption) < 10: return {}
+    print(f"🧠 GPT-4o가 '{venue_name}'의 게시글을 읽는 중...")
+    
+    if not caption or len(caption) < 10:
+        return {}
+    
     prompt = f"""
-    이것은 '{venue_name}' 인스타그램 게시물의 텍스트(Caption)야. 내용: {caption}
-    이 글을 읽고 공연 정보를 JSON으로 추출해줘. 1. title: 공연명 (없으면 라인업으로 대체) 2. date: 일시 (형식: YYYY.MM.DD (요일) HH:mm) - 년도 없으면 2025년 가정. 3. venue: 장소 (글에 없으면 '{venue_name}') 4. lineup: 출연진 (배열 형태)
-    만약 공연 정보가 아닌 것 같으면(예: 공지사항, 단순 인사말) 빈 JSON {{}}을 줘. 오직 JSON 데이터만 뱉어.
+    이것은 '{venue_name}' 인스타그램 게시물의 텍스트(Caption)야.
+    내용: {caption}
+    
+    이 글을 읽고 공연 정보를 JSON으로 추출해줘.
+    1. title: 공연명 (없으면 라인업으로 대체)
+    2. date: 일시 (형식: YYYY.MM.DD (요일) HH:mm) - 년도 없으면 2025년 가정.
+    3. venue: 장소 (글에 없으면 '{venue_name}')
+    4. lineup: 출연진 (배열 형태)
+    
+    만약 공연 정보가 아닌 것 같으면(예: 공지사항, 단순 인사말) 빈 JSON {{}}을 줘.
+    오직 JSON 데이터만 뱉어.
     """
+
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o", messages=[{"role": "system", "content": "너는 공연 정보 추출 전문가야."}, {"role": "user", "content": prompt}],
@@ -76,57 +89,20 @@ def analyze_text_with_gpt(caption, venue_name):
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
+        print(f"⚠️ GPT 분석 실패: {e}")
         return {}
 
-# === 3. ★ 이미지 영구 저장 함수 ★ ===
-def upload_image_to_supabase_storage(image_url: str, post_link: str) -> str:
-    """ 인스타그램 이미지 URL에서 파일을 다운로드하고, Supabase Storage(posters 버킷)에 업로드합니다. """
-    if not image_url or not post_link: return ""
-
-    try:
-        unique_id = post_link.split('/p/')[1].strip('/').split('/')[0]
-        file_name = f"{unique_id}.jpg"
-    except: return ""
-
-    # 이미지 다운로드
-    try:
-        response = requests.get(image_url, stream=True)
-        response.raise_for_status() 
-        image_data = response.content
-    except requests.exceptions.RequestException as e:
-        return ""
-
-    # Supabase Storage에 업로드 (Service Role이 필요함. GitHub Secrets에서 Key를 가져옴)
-    try:
-        # 이 시점에 supabase_client는 GitHub Actions의 Secrets로 초기화됩니다.
-        supabase_client.storage.from_("posters").upload(
-            file=image_data,
-            path=file_name,
-            file_options={"content-type": "image/jpeg"}
-        )
-        # 업로드된 파일의 공개 URL을 생성하여 반환
-        new_public_url = supabase_client.storage.from_("posters").get_public_url(file_name)
-        return new_public_url
-
-    except Exception as e:
-        # 이미 존재하는 파일일 경우 PASS 처리
-        if "already exists" in str(e):
-            new_public_url = supabase_client.storage.from_("posters").get_public_url(file_name)
-            print(f"Storage: PASS: 이미 저장된 이미지. URL: {new_public_url}")
-            return new_public_url
-        else:
-            print(f"Storage: 이미지 업로드 실패: {e}")
-            return ""
+# === 3. 이미지 영구 저장 함수 (Storage는 이 단계에서 제외하고 DB 저장만 진행합니다) ===
+# 이 단계는 GitHub Actions 성공 후, 별도로 진행해야 합니다.
 
 
-# === 4. DB 저장 함수 (클라우드 환경용) ===
+# === 4. DB 저장 함수 (최종 저장 로직) ===
 def save_to_supabase(data):
     print(f"💾 Supabase 저장 시도: {data.get('title')}")
     
     headers = {
-        # GitHub Actions가 Key를 깨끗하게 넣어줄 것이므로, 그대로 사용합니다.
-        "Authorization": f"Bearer {SUPABASE_KEY}", 
-        "apikey": SUPABASE_KEY, 
+        "Authorization": f"Bearer {SUPABASE_KEY.strip()}", 
+        "apikey": SUPABASE_KEY.strip(), 
         "Content-Type": "application/json",
         "Prefer": "resolution=prefer-response-schema", 
     }
@@ -147,7 +123,7 @@ def save_to_supabase(data):
 
 # === 메인 실행 ===
 if __name__ == "__main__":
-    print("🚀 [최종 자동화] 로봇 가동!")
+    print("🚀 [최종 통합] 로봇 가동!")
     
     time.sleep(2) 
     
@@ -162,15 +138,13 @@ if __name__ == "__main__":
                 if not analyzed_data or not analyzed_data.get("title"):
                     continue
 
-                # 이미지 영구 저장
-                permanent_url = upload_image_to_supabase_storage(post['url'], post['post_link'])
-
+                # ★ Storage 로직은 GitHub Actions 성공 후 진행합니다. (현재는 링크 그대로 사용)
                 concert_data = {
                     "title": analyzed_data.get("title", "정보 없음"),
                     "date": analyzed_data.get("date", ""),
                     "venue": analyzed_data.get("venue", ""),
                     "lineup": analyzed_data.get("lineup", []),
-                    "poster_url": permanent_url or post['url'], # 영구 URL 사용
+                    "poster_url": post['url'],
                     "post_link": post['post_link']
                 }
                 
