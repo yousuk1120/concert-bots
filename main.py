@@ -28,7 +28,8 @@ SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1/concert_data"
 TARGET_ACCOUNTS = [
     "hongdaeff", "club_sharp", "subriot_hbc", "liveclubday",
     "jebidabang", "musinsagarage", "clubbang", "channel1969.seoul", "club_victim",
-    "rollinghall", "prismhall"
+    "rollinghall", "prismhall" , "greenflameboys_official" , "galaxy_express_official"
+    "chippostgang" , "idiots.band" , "meaningful_stone" , "bandbyebyebadman"
 ]
 
 # === 1. 수집 함수 ===
